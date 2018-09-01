@@ -1,0 +1,274 @@
+---
+title: "Data Quality Report"
+author: "Ken Nhan"
+date: "June 6, 2018"
+output: html_document
+mainfont: Helvetica
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+options(knitr.table.format = "html")
+```
+
+
+```{r}
+#Goal: create a DQR function that automatically generate a Data Quality Report
+#with minimum adjustment to the dataset.
+
+#Assumption: the variables have been labeled as categorical/numerical correctly
+library(tidyverse)
+library(stringr)
+library(readxl)
+library(lubridate)
+library(knitr)
+library(cowplot)
+library(kableExtra)
+```
+  
+_____________________________________________________________________________
+### Reading + pre-filter data:
+```{r echo = T}
+# [Need manual change] Read & Clean data type --------------------------------------
+data = read_csv("sample_data.csv")
+#read_xlsx(path = "card transactions.xlsx", sheet = "Sheet1")
+
+data = select(data, -X11)
+
+colnames(data)[5:7] = c('MercDesc','MercState','MercZip')
+#data = rename(data, c('MercNum'='Merchantnum'))
+
+# [Need manual change] Converting variable type ------------------------------------
+CateVar_cvrt = c("Cardnum")
+NumVar_cvrt = c("Amount")
+DateVar_cvrt = c("Date")
+
+for (i in CateVar_cvrt) {
+  data[[i]] = as.character(data[[i]])  
+}
+
+for (i in NumVar_cvrt) {
+  data[[i]] = as.numeric(data[[i]])
+}
+
+for (i in DateVar_cvrt) {
+  data[[i]] = mdy(data[[i]])
+}
+
+# [Need manual change] Variable type grouping --------------------------------------
+DateVar = colnames(data)[lapply(data, class) == 'Date']
+CateVar = colnames(data)[lapply(data, class) == 'character']
+NumVar = colnames(data)[lapply(data, class) %in% c('integer','numeric','double','float')]
+```
+  
+_____________________________________________________________________________
+###Quick overview of data:
+```{r}
+glimpse(data)
+```
+
+  
+```{r results='asis'}
+# Summary table -----------------------------------------------------------
+c1 = as_data_frame(colnames(data))
+colnames(c1) = 'Variable'
+
+c2 = as_data_frame(sapply(data, class))
+colnames(c2) = 'Var_Type'
+
+c3 = as_data_frame(colSums(!is.na(data) > 0))
+colnames(c3) = 'Non_NULL_records'
+
+c4 = as_data_frame(round(colSums(!is.na(data) > 0)/nrow(data) * 100, 2))
+colnames(c4) = 'Pct_non_NULL_records'
+
+# Because we can't compare dataType 'Date' to blank '', we have to compare case by case
+c5 = matrix(nrow = ncol(data), ncol = 1)
+for (i in 1:ncol(data)) {
+  c5[i,1] = ifelse(class(data[[i]]) != 'Date',
+                      sum(data[[i]] != '',na.rm = T),
+                      sum(!is.na(data[[i]]), na.rm = T)
+                    )
+}
+c5 = as_data_frame(c5)
+colnames(c5) = 'non_blank_records'
+
+c6 = round(c5/nrow(data) * 100, 2)
+colnames(c6) = 'Pct_non_blank_records'
+
+c7 = as_data_frame(t(as_data_frame(lapply(lapply(data, unique), length))))
+colnames(c7) = 'Unique_values'
+
+c8 = as_data_frame(t(as_data_frame(lapply(lapply(data, unique), length))))
+colnames(c8) = 'Pct_unique_values'
+c8[['Pct_unique_values']] = round(c8[['Pct_unique_values']]/nrow(data) * 100,2)
+
+SummTable = bind_cols(c1,c2,c3,c4,c5,c6,c7,c8)
+rm(c1,c2,c3,c4,c5,c6,c7,c8)
+```
+  
+_____________________________________________________________________________
+###Summary of variables:
+```{r}
+df = data_frame('Data type' = c('Categorical', 'Numeric', 'Date/Time'),
+           'No. of variables' = c(length(CateVar), length(NumVar), length(DateVar)))
+kable(df, booktabs = T) %>%
+  kable_styling(bootstrap_options = "striped", 
+                full_width = F,
+                position = 'left')
+```
+  
+  
+```{r}
+kable(SummTable, 
+      col.names = c('Variable','Type','#_records','records(%)',
+                    'NonBlank','NonBlank(%)','Uniq_val','Uniq_val(%)'),
+      format.args = list(big.mark = ",")) %>%
+  kable_styling(bootstrap_options = "striped")
+```
+
+_____________________________________________________________________________
+###Summary Statistics for Numerical Variables:
+```{r}
+# Stat. Summ table for Num Var ----------------------------------------------
+
+# Variable + % populated
+c1 = SummTable %>%
+  filter(Var_Type %in% c('integer','numeric','double','float')) %>%
+  select(Variable, Pct_non_NULL_records) 
+
+NumVar = c1[[1]]
+
+# the 5 quantiles
+c2 = data[NumVar] %>%
+  sapply(quantile) %>%
+  data.frame() %>%
+  t() %>%
+  as_data_frame()
+
+# mean
+c3 = data[NumVar] %>%
+  colMeans() %>%
+  as_data_frame()
+colnames(c3) = 'Mean'
+
+# Standard deviation
+c4 = data[NumVar] %>%
+  sapply(sd) %>%
+  as_data_frame()
+colnames(c4) = 'STD'
+
+SumStat = bind_cols(c1,c2,c3,c4)
+rm(c1,c2,c3,c4)
+
+kable(SumStat, 
+      col.names = c('Variable','record(%)','Min','Q1','Q2','Q3','Max','Mean','SD'),
+      digits = 2,
+      format.args = list(big.mark = ",")) %>%
+  kable_styling(bootstrap_options = "striped")
+
+```
+
+
+```{r}
+# Graph: Load theme --------------------------------------------------------------
+mytheme = theme(text = element_text(family = 'Helvetica'),
+                title = element_text(size = 14),
+                axis.title = element_text(size = 12),
+                axis.text = element_text(size = 10),
+                panel.background = element_rect(fill = 'white'),
+                panel.grid.major = element_line(colour = 'grey90'))
+```
+  
+_____________________________________________________________________________ 
+### Graph for Categorical variables:
+```{r}
+# Graph for Cate Var ------------------------------------------------------
+for (i in CateVar) {
+  df = data %>%
+    filter(!is.na(UQ(as.name(i)))) %>%
+    group_by_(i) %>%
+    summarize(count = n()) %>%
+    arrange(desc(count)) %>%
+    head(20)
+  df[[i]] = factor(df[[i]], levels = df[[i]][order(df$count)])
+  
+  gr = ggplot(df, aes_string(i, 'count')) +
+        geom_point(size = 2) +
+        ggtitle("") +
+        xlab(i) +
+        coord_flip() +
+        mytheme
+  
+  print(ggdraw(gr) + 
+          draw_text(paste0('Top 20 values of ',i), 
+                    x = 0.01, y = 0.98, hjust = 0, vjust = 1)
+  )
+}
+```
+
+_____________________________________________________________________________
+### Graph for Date/Time variables:
+```{r}
+for (i in DateVar) {
+  df = data %>%
+    group_by_(i) %>%
+    summarize(count = n()) %>%
+    arrange(desc(count))
+  
+  gr = ggplot(df, aes_string(i, 'count')) +
+    geom_line(width = 0.8) +
+    ggtitle("") +
+    labs(x = i,
+         y = "Count") +
+    scale_x_date(date_breaks = "1 month",
+                     date_labels = "%b %y") +
+    scale_y_continuous(labels = scales::comma,
+                       expand = c(0,0)) +
+    mytheme
+  
+  print(ggdraw(gr) +
+          draw_text(paste0("Daily count of ",i), 
+                    x = 0.01, y = 0.98, hjust = 0, vjust = 1)
+  )
+  
+  df = data %>%
+    group_by(month = format.Date(data[[i]], format = '%m-%y')) %>%
+    summarize(count = n()) %>%
+    arrange(desc(count))
+  gr = ggplot(df, aes(month, count, group = 1)) + 
+    geom_line(width = 0.8) +
+    ggtitle("") +
+    labs(x = "Month",
+         y = "Count") +
+    scale_y_continuous(labels = scales::comma,
+                       limits = c(0, max(df$count)),
+                       expand = c(0,0)) +
+    mytheme
+  print(ggdraw(gr) +
+          draw_text(paste0("Monthly count of ",i), 
+                    x = 0.01, y = 0.98, hjust = 0, vjust = 1)
+  )
+  
+  df = data %>%
+    group_by(dow = weekdays(data[[i]], abbreviate = T)) %>%
+    summarize(count = n()) 
+  df$dow = factor(df$dow, 
+                  levels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
+  gr = ggplot(df, aes(dow, count)) +
+    geom_col(width = 0.5) +
+    ggtitle("") +
+    labs(x = "Day of week",
+         y = "Count") +
+    scale_y_continuous(labels = scales::comma,
+                       expand = c(0,0)) +
+    mytheme
+  print(ggdraw(gr) +
+          draw_text(paste0("DOW count of ",i), 
+                    x = 0.01, y = 0.98, hjust = 0, vjust = 1)
+  )
+}
+```
+
+
+
